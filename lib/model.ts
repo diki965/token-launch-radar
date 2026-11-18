@@ -10,18 +10,25 @@
 //
 // Implied value is one function of the snapshot's own figures, the same for every row:
 //
-//   multiple[cat] = median mcap/TVL of live-token (non-CEX) protocols in that category,
-//                   shrunk toward the global median with 5 pseudo-observations,
-//                   capped at 1.0x TVL; a category with no live comparable uses the
-//                   global median outright.
+//   multiple[cat] = median mcap/TVL of live-token (non-CEX, positive market cap)
+//                   protocols in that category, shrunk toward the global median
+//                   with 5 pseudo-observations, capped at 1.0x TVL; a category with
+//                   no live comparable uses the global median outright.
+//   global median = the median mcap/TVL across all live-token (non-CEX, positive
+//                   market cap) protocols, computed from the snapshot at runtime —
+//                   a market cap of zero or less is a dead or erroneous record
+//                   (this snapshot carries one at -1), never a comparable. The
+//                   constant in MODEL below is only the fallback for a snapshot
+//                   with no such protocol.
 //   growth     = clamp(change_7d, -60, 120), or 0 when unreported
 //   growthMult = 1 + growth / 100 * 0.5
 //   maturity   = 0.6 + min(age_days, 1095) / 1095 * 0.4   (age unknown: 365 days)
 //   implied    = max(1, round(tvl_usd * multiple[cat] * growthMult * maturity))
 //
-// No protocol name is ever special-cased. The category multiples are computed from the snapshot
-// at runtime — a new snapshot re-prices every row — and the dashboard shows each multiple with
-// the count of live comparables behind it, so a multiple resting on one protocol reads as such.
+// No protocol name is ever special-cased. The category multiples and the global median are
+// computed from the snapshot at runtime — a new snapshot re-prices every row — and the
+// dashboard shows each multiple with the count of live comparables behind it, so a multiple
+// resting on one protocol reads as such.
 
 /** One protocol record: exactly the ten fields the sealed snapshot carries. */
 export interface SnapshotProtocol {
@@ -48,7 +55,9 @@ export interface Snapshot {
 
 /** The model's constants, stated in the dashboard and changeable in its sandbox. */
 export interface ModelConstants {
-  /** The live-token market's median mcap/TVL, the shrinkage target and the fallback multiple. */
+  /** Fallback for the live-token market's median mcap/TVL, used only when the snapshot
+   *  carries no live-token protocol with a positive market cap; the run's value is
+   *  computed from the snapshot (see globalMedian). */
   global_median: number;
   /** Pseudo-observations pulling a thin category's median toward the global median. */
   shrink_observations: number;
@@ -77,7 +86,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label, shown by the dashboard. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the dashboard's Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -203,14 +212,31 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 }
 
 /**
+ * The live-token market's median mcap/TVL, computed from the snapshot at runtime: the
+ * median ratio across protocols that record a positive market cap and are not a
+ * centralised exchange. A market cap of zero or less is a dead or erroneous record
+ * (this snapshot carries one at -1), never a comparable. Falls back to the model's
+ * constant when the snapshot carries no such protocol.
+ */
+export function globalMedian(snapshot: Snapshot, model: ModelConstants = MODEL): number {
+  const ratios: number[] = [];
+  for (const p of snapshot.protocols) {
+    if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0 || p.category === 'CEX') continue;
+    ratios.push(p.mcap_usd / p.tvl_usd);
+  }
+  return median(ratios) ?? model.global_median;
+}
+
+/**
  * Every category's multiple, computed from the snapshot's live-token protocols at runtime.
- * A live protocol is one that records a market cap and is not a centralised exchange. The
- * shrinkage keeps a category with one or two comparables from inheriting a wild ratio whole.
+ * A live protocol is one that records a positive market cap and is not a centralised
+ * exchange. The shrinkage keeps a category with one or two comparables from inheriting
+ * a wild ratio whole.
  */
 export function categoryMultiples(snapshot: Snapshot, model: ModelConstants = MODEL): CategoryMultiple[] {
   const ratios = new Map<string, number[]>();
   for (const p of snapshot.protocols) {
-    if (p.mcap_usd === null || p.tvl_usd <= 0 || p.category === 'CEX') continue;
+    if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0 || p.category === 'CEX') continue;
     const list = ratios.get(p.category) ?? [];
     list.push(p.mcap_usd / p.tvl_usd);
     ratios.set(p.category, list);
@@ -285,7 +311,8 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
-  const multiples = categoryMultiples(snapshot, model);
+  const effective: ModelConstants = { ...model, global_median: globalMedian(snapshot, model) };
+  const multiples = categoryMultiples(snapshot, effective);
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug on it is ranked, whatever its size.
@@ -302,7 +329,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   for (const p of early) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, multiples, model);
+    const v = impliedValue(p, snapshot.as_of, multiples, effective);
     return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -466,15 +493,16 @@ export function radarRow(row: BoardRow): RadarRow {
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const board = buildBoard(snapshot, model);
+  const effective: ModelConstants = { ...model, global_median: globalMedian(snapshot, model) };
+  const board = buildBoard(snapshot, effective);
   const live = liveRows(snapshot);
-  const multiples = categoryMultiples(snapshot, model);
+  const multiples = categoryMultiples(snapshot, effective);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
     floor_usd: snapshot.floor_usd,
-    model,
+    model: effective,
     model_version: MODEL_VERSION,
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,

@@ -391,7 +391,7 @@
       el('div', { class: 'formula' },
         'implied = round( tvl_usd x multiple[category] x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
       ),
-      el('p', { class: 'sub', text: 'The category multiple is the median mcap/TVL of the live-token protocols in that category (never a centralised exchange), shrunk toward the global median of ' + m.global_median + ' with ' + m.shrink_observations + ' pseudo-observations and capped at ' + m.multiple_cap + 'x TVL. A category with no live comparable uses the global median. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days.' }),
+      el('p', { class: 'sub', text: 'The category multiple is the median mcap/TVL of the live-token protocols in that category with a positive market cap (never a centralised exchange), shrunk toward the global median of ' + m.global_median + ' with ' + m.shrink_observations + ' pseudo-observations and capped at ' + m.multiple_cap + 'x TVL. A category with no live comparable uses the global median. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days.' }),
       el('h3', { text: 'Category multiples, with their evidence' }),
       el('div', { class: 'mult-wrap' },
         el('table', null,
